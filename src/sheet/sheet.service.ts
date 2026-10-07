@@ -1,45 +1,17 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import XLSX from 'xlsx';
+import { BankService } from '../bank/bank.service.js';
 
 @Injectable()
 export class SheetService {
+  constructor(
+    private readonly bankService: BankService,
+  ) {}
+
   private normalizeHeader(value: string): string {
     return String(value || '')
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '');
-  }
-
-  private normalizeBankName(value: string): string {
-    const name = String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '');
-
-    const aliases: Record<string, string> = {
-      sbi: 'statebankofindia',
-      statebankofindia: 'statebankofindia',
-      hdfc: 'hdfcbank',
-      hdfcbank: 'hdfcbank',
-      icici: 'icicibank',
-      icicibank: 'icicibank',
-      pnb: 'punjabnationalbank',
-      punjabnationalbank: 'punjabnationalbank',
-      bob: 'bankofbaroda',
-      bankofbaroda: 'bankofbaroda',
-      boi: 'bankofindia',
-      bankofindia: 'bankofindia',
-      axis: 'axisbank',
-      axisbank: 'axisbank',
-      kotak: 'kotakmahindrabank',
-      kotakmahindrabank: 'kotakmahindrabank',
-      canara: 'canarabank',
-      canarabank: 'canarabank',
-      idbi: 'idbibank',
-      idbibank: 'idbibank',
-      unionbank: 'unionbankofindia',
-      unionbankofindia: 'unionbankofindia',
-    };
-
-    return aliases[name] || name;
   }
 
   private findColumn(
@@ -103,13 +75,12 @@ export class SheetService {
       'BANK ACCOUNT NUMBER',
     ]);
 
-    const cache = new Map<string, any>();
     const outputRows: Record<string, any>[] = [];
 
     for (const row of rows) {
       const errors: string[] = [];
 
-      // Check every cell in the row for commas and dots.
+      // Check every cell for commas and dots
       for (const [column, value] of Object.entries(row)) {
         if (String(value ?? '').includes(',')) {
           errors.push(`Comma found in column "${column}"`);
@@ -120,7 +91,7 @@ export class SheetService {
         }
       }
 
-      // Check account number if a recognized column exists.
+      // Account number validation
       if (accountColumn) {
         const accountNumber = String(
           row[accountColumn] ?? '',
@@ -135,7 +106,6 @@ export class SheetService {
         }
       }
 
-      // Check whether bank and IFSC columns were identified.
       if (!bankColumn) {
         errors.push('Bank name column not recognized');
       }
@@ -144,7 +114,7 @@ export class SheetService {
         errors.push('IFSC column not recognized');
       }
 
-      // Validate bank name and IFSC when both columns exist.
+      // SAME validation logic used by /bank/validate
       if (bankColumn && ifscColumn) {
         const bankName = String(
           row[bankColumn] ?? '',
@@ -164,35 +134,28 @@ export class SheetService {
 
         if (bankName && ifsc) {
           try {
-            let bank = cache.get(ifsc);
-
-            if (bank === undefined) {
-              const response = await fetch(
-                `https://ifsc.razorpay.com/${encodeURIComponent(ifsc)}`,
+            const result =
+              await this.bankService.validateBank(
+                bankName,
+                ifsc,
               );
 
-              if (!response.ok) {
-                bank = null;
-              } else {
-                bank = await response.json();
+            if (!result.valid) {
+              for (const flag of result.flags || []) {
+                if (typeof flag === 'string') {
+                  errors.push(flag);
+                } else if (flag?.message) {
+                  errors.push(flag.message);
+                }
               }
 
-              cache.set(ifsc, bank);
-            }
-
-            if (!bank) {
-              errors.push('IFSC code not found');
-            } else if (
-              this.normalizeBankName(bankName) !==
-              this.normalizeBankName(bank.BANK)
-            ) {
-              errors.push(
-                `Bank name does not match IFSC; expected ${bank.BANK}`,
-              );
+              if (!result.flags?.length) {
+                errors.push('Bank details could not be verified');
+              }
             }
           } catch {
             errors.push(
-              'Unable to verify IFSC; please retry',
+              'Unable to verify bank details; please retry',
             );
           }
         }
@@ -206,7 +169,9 @@ export class SheetService {
     }
 
     const outputWorkbook = XLSX.utils.book_new();
-    const outputSheet = XLSX.utils.json_to_sheet(outputRows);
+
+    const outputSheet =
+      XLSX.utils.json_to_sheet(outputRows);
 
     XLSX.utils.book_append_sheet(
       outputWorkbook,
